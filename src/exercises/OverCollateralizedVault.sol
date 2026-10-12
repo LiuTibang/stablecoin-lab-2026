@@ -7,7 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {SimpleStablecoin} from "../SimpleStablecoin.sol";
 import {IPriceFeed} from "./IPriceFeed.sol";
 
-/// @title Over-collateralized vault (Ex5) — four TODOs are waiting for you
+/// @title Over-collateralized vault (Ex5) — valuation, minting, withdrawal and liquidation
 /// @notice Unlike the 1:1 loop in Vault.sol, $1 of collateral deposited here mints at most
 ///         0.667 sUSD (a 150% collateral ratio). Once the collateral ratio falls below
 ///         120%, anyone can take that collateral at a discount by paying sUSD — that is
@@ -104,7 +104,7 @@ contract OverCollateralizedVault {
     }
 
     // ==================================================================
-    // TODO Ex5.1 — decimal conversion
+    // Ex5.1 — decimal conversion
     // ==================================================================
 
     /// @notice Convert `amount` units of collateral (18 decimals) into sUSD smallest units
@@ -112,11 +112,11 @@ contract OverCollateralizedVault {
     /// @dev The product carries 18 + 8 = 26 decimals and you want 6 — divide by 10 to the
     ///      what?
     function collateralValue(uint256 amount) public view returns (uint256) {
-        revert("TODO Ex5.1: collateralValue");
+        return amount * collateralPrice() / 1e20;
     }
 
     // ==================================================================
-    // TODO Ex5.2 — minting has to leave enough collateral behind
+    // Ex5.2 — minting has to leave enough collateral behind
     // ==================================================================
 
     /// @notice Mint `amount` of sUSD, but the collateral ratio afterwards must not fall
@@ -124,21 +124,30 @@ contract OverCollateralizedVault {
     /// @dev Record the debt first and check second, so that collateralRatio() is looking
     ///      at the post-mint state
     function mintStable(uint256 amount) external {
-        revert("TODO Ex5.2: mintStable");
+        if (amount == 0) revert ZeroAmount();
+        debtOf[msg.sender] += amount;
+        if (collateralRatio(msg.sender) < MIN_COLLATERAL_RATIO) revert Undercollateralized();
+        stable.mint(msg.sender, amount);
+        emit StableMinted(msg.sender, amount);
     }
 
     // ==================================================================
-    // TODO Ex5.3 — withdrawing collateral must not leave the position unhealthy either
+    // Ex5.3 — withdrawing collateral must not leave the position unhealthy either
     // ==================================================================
 
     /// @notice Withdraw `amount` units of collateral; the ratio afterwards must not fall
     ///         below MIN_COLLATERAL_RATIO
     function redeemCollateral(uint256 amount) external {
-        revert("TODO Ex5.3: redeemCollateral");
+        if (amount == 0) revert ZeroAmount();
+        if (amount > collateralOf[msg.sender]) revert InsufficientCollateral();
+        collateralOf[msg.sender] -= amount;
+        if (collateralRatio(msg.sender) < MIN_COLLATERAL_RATIO) revert Undercollateralized();
+        collateral.safeTransfer(msg.sender, amount);
+        emit CollateralRedeemed(msg.sender, amount);
     }
 
     // ==================================================================
-    // TODO Ex5.4 — liquidation
+    // Ex5.4 — liquidation
     // ==================================================================
 
     /// @notice Once the ratio falls below LIQUIDATION_RATIO, anyone may burn that user's
@@ -148,6 +157,16 @@ contract OverCollateralizedVault {
     ///      take everything the user has left — the shortfall is bad debt, and that is
     ///      exactly where liquidation is most fragile.
     function liquidate(address user) external {
-        revert("TODO Ex5.4: liquidate");
+        if (collateralRatio(user) >= LIQUIDATION_RATIO) revert NotLiquidatable();
+        uint256 debt = debtOf[user];
+        // Convert 6-decimal debt to 18-decimal collateral, including the bonus.
+        uint256 seized = debt * (RATIO_PRECISION + LIQUIDATION_BONUS) * 1e20
+            / (RATIO_PRECISION * collateralPrice());
+        if (seized > collateralOf[user]) seized = collateralOf[user];
+        debtOf[user] = 0;
+        collateralOf[user] -= seized;
+        stable.burn(msg.sender, debt);
+        collateral.safeTransfer(msg.sender, seized);
+        emit Liquidated(user, msg.sender, debt, seized);
     }
 }
