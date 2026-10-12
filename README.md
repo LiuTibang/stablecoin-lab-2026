@@ -135,7 +135,7 @@ thin air without collateral appearing, the equation breaks and the coin stops be
 
 `src/exercises/` is a second system to practise on: `OverCollateralizedVault.sol`
 (over-collateralization + liquidation) together with `MockPriceFeed.sol` (a price feed you can
-move by hand). It contains four TODOs, which are the subject of Ex5.
+move by hand). Its four Ex5 operations implement valuation, minting, withdrawal, and liquidation.
 
 ---
 
@@ -167,7 +167,7 @@ Deploy to the Sepolia testnet and verify the source on Etherscan; submit the con
 cp .env.example .env    # fill in private key, RPC URL, Etherscan API key
 source .env
 forge script script/Deploy.s.sol:Deploy \
-  --rpc-url $SEPOLIA_RPC_URL --broadcast --verify --private-key $PRIVATE_KEY
+  --rpc-url $SEPOLIA_RPC_URL --hardfork amsterdam --broadcast --verify --private-key $PRIVATE_KEY
 ```
 
 **`--verify` needs `ETHERSCAN_API_KEY`** — free and takes seconds at
@@ -268,3 +268,87 @@ These have no standard answers. They are the real point of this lab:
    `totalCollateral()` invariant?
 
 Question 4 is the door into next week's RWA lab.
+
+
+## 8. Completed Tier 1 architecture and assumptions
+
+```mermaid
+flowchart LR
+    U[User] -->|approve and deposit mUSDC| V[Vault: 1-to-1 loop]
+    V -->|custody| C[MockUSDC: 6 decimals]
+    V -->|mint to user / burn on redemption| S[SimpleStablecoin: 6 decimals]
+    V -->|redeem mUSDC| U
+    A[Role administrator] -->|grant MINTER_ROLE| V
+    P[PAUSER_ROLE holder] -->|pause all token updates| S
+    H[Ex6 handler: three users] -->|random deposits and redemptions| V
+    W[User / liquidator] -->|deposit or withdraw mWETH| O[OverCollateralizedVault: separate Ex5 system]
+    F[MockPriceFeed: 8 decimals] -->|USD price| O
+    O -->|custody| E[MockWETH: 18 decimals]
+    O -->|mint / repay / liquidator debt burn| T[Separate sUSD instance in Ex5 tests]
+    O -->|seized collateral| W
+```
+
+The core vault exchanges six-decimal collateral and sUSD at 1:1. Ex6 restricts
+random calls to its handler's deposit and redeem functions and checks
+`totalCollateral() >= totalSupply()` plus a zero sUSD balance at the vault.
+These properties cover that operation set; arbitrary transfers to the vault or
+privileged unbacked minting are outside the handler's model.
+
+Ex5 converts collateral value with `amount * price / 10^20`. Minting and
+withdrawal require a resulting ratio of at least 150%; liquidation requires a
+ratio below 120%. The liquidator burns the entire debt and receives collateral
+worth 110% of that debt, capped by the borrower's available collateral. Any
+unseized collateral stays assigned to the borrower. If backing is insufficient,
+the liquidator still pays the full debt in this simplified model: the missing
+bonus or principal value is an economic loss, not an outstanding debt balance
+recorded after successful liquidation. A deeply underwater position may attract
+no rational liquidator.
+
+These mocks assume standard tokens, fixed decimal scales, and a valid positive
+oracle price. Production would additionally require freshness checks, resilient
+oracle design, arithmetic bounds, liquidity planning, and tighter privileges.
+Ex0–Ex4 and existing screenshots were retained. Tier 2 is documented below. Tier 3 remains outside this completion;
+no testnet deployment is required for Tier 1.
+
+
+## 9. Tier 2 — verified Sepolia deployment
+
+Deployed on **2026-10-12 (Asia/Shanghai)** to Ethereum Sepolia, chain ID
+**11155111**, using `script/Deploy.s.sol:Deploy`. All three contracts have
+verified source on Etherscan (Solidity `0.8.24`, optimizer enabled, 200 runs).
+
+| Contract | Sepolia address | Etherscan |
+|---|---|---|
+| `MockUSDC` | `0xf97307c355e72934b79bc62c4e8c0df8b38ae898` | [Verified source](https://sepolia.etherscan.io/address/0xf97307c355e72934b79bc62c4e8c0df8b38ae898#code) |
+| `SimpleStablecoin` | `0x3dbeb56849563ca98132d177fa4979f77cb763c9` | [Verified source](https://sepolia.etherscan.io/address/0x3dbeb56849563ca98132d177fa4979f77cb763c9#code) |
+| `Vault` | `0x812c2674b3e6e39288d6e6e02fdd0d29e0bf84d0` | [Verified source](https://sepolia.etherscan.io/address/0x812c2674b3e6e39288d6e6e02fdd0d29e0bf84d0#code) |
+
+All four transaction receipts report success:
+
+- MockUSDC deployment: [transaction](https://sepolia.etherscan.io/tx/0xadfcea48310e0bee5aa78c68b9df033a8b3558352ac3d6c95d62fb699d784b51)
+- SimpleStablecoin deployment: [transaction](https://sepolia.etherscan.io/tx/0x6191f2b7e29c0992b0a2fa7a44e1b48a7e0cf1f2e85309540307fd3796622505)
+- Vault deployment: [transaction](https://sepolia.etherscan.io/tx/0x9e30c716af71672fc546f9449446754db07eb52d446f0f62ef69a666137a2c62)
+- SimpleStablecoin MINTER_ROLE grant: [transaction](https://sepolia.etherscan.io/tx/0x70f1547fb4ef995304abad9eefda220453149aeb8068c3ac3f09bfc6abac3202)
+
+Read-only checks confirmed that Vault points to the listed MockUSDC and
+SimpleStablecoin, Vault holds `MINTER_ROLE`, sUSD uses six decimals, and the
+initial supply and vault collateral are both zero.
+
+The successful deployment and role grant consumed **0.012881256 Sepolia ETH**.
+An initial attempt failed without creating a contract because the local runtime
+underestimated state-creation gas; it consumed 0.000675333 test ETH.
+The final run used `--hardfork amsterdam` to match Sepolia's upgraded runtime,
+with each creation limit checked against the RPC node's estimate. Compilation
+settings and contract sources were retained. See the
+[official Sepolia upgrade announcement](https://blog.ethereum.org/2026/09/17/glamsterdam-testnet-announcement).
+
+### Submission evidence
+
+- [Core tests passing](screenshots/%E6%88%AA%E5%B1%8F2026-10-12%2012.19.33.png): `make test` — 7 passed, 0 failed.
+- `make exercise` — 18 passed, 0 failed; Ex6 completed 256 runs and 128,000 calls.
+- [Ex3 supply-versus-collateral screenshot](screenshots/%E6%88%AA%E5%B1%8F2026-10-12%2011.06.16.png).
+- [Discussion answers](STUDENT-QUESTIONS.md), including the five Ex4 test names.
+- Architecture diagram: section 8 above.
+
+Only test ETH was used. `.env`, keys, build caches, and broadcast internals are
+excluded from the submission. Tier 3 remains optional and was not completed.
