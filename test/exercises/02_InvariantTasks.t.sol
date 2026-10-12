@@ -16,7 +16,7 @@ import {Vault} from "../../src/Vault.sol";
 ///         That is what a stablecoin should be tested like — you will never guess the
 ///         order an attacker does things in.
 ///
-///         Acceptance: make exercise (it should be red until you are finished)
+///         Acceptance: make exercise
 ///
 /// @dev How it works: Foundry picks functions from the handler at random, picks random
 ///      arguments, and calls them N times in a row; after each round it runs every
@@ -62,14 +62,22 @@ contract VaultHandler is Test {
         ghost_deposits++;
     }
 
-    /// TODO Ex6.1 — implement redemption
+    /// Ex6.1 — bounded redemption handler
     /// @dev Requirements:
     ///       1) pick one user at random (a user may hold 0 sUSD — if so, return early)
     ///       2) bound amount to [1, that user's sUSD balance]
     ///       3) call vault.redeem(amount) as that user
     ///       4) do not forget approve — redeem needs no allowance, but deposit does
     ///      Hint: the two parameters have no names yet. Name them first.
-    function redeem(uint256, uint256) external {}
+    function redeem(uint256 userSeed, uint256 amount) external {
+        address user = users[bound(userSeed, 0, users.length - 1)];
+        uint256 balance = stable.balanceOf(user);
+        if (balance == 0) return;
+        amount = bound(amount, 1, balance);
+        vm.prank(user);
+        vault.redeem(amount);
+        ghost_redeems++;
+    }
 }
 
 contract InvariantTasksTest is Test {
@@ -96,19 +104,16 @@ contract InvariantTasksTest is Test {
         targetContract(address(handler));
     }
 
-    /// TODO Ex6.2 — the main invariant: collateral is never less than the supply
-    /// @dev The assertion below is wrong on purpose (it asserts the supply is 0), which is
-    ///      why it goes red. Turn it into the property you actually want to defend. When it
-    ///      fails, Foundry prints the counterexample call sequence — walk through that
-    ///      sequence and you will see exactly how the invariant broke.
+    /// Ex6.2 — collateral is never less than the supply under handler operations.
+    /// @dev Foundry reports a counterexample call sequence if backing is violated.
     function invariant_CollateralBacksSupply() public view {
-        assertEq(stable.totalSupply(), 0, "TODO Ex6.2");
+        assertGe(vault.totalCollateral(), stable.totalSupply(), "collateral must back supply");
     }
 
-    /// TODO Ex6.3 — a second invariant: the vault itself never holds sUSD
+    /// Ex6.3 — the vault itself never holds sUSD under handler operations
     /// @dev Think about why this has to hold: the vault only ever mints sUSD to users and
     ///      should keep none for itself. If this one breaks, what does that mean?
     function invariant_VaultHoldsNoStablecoin() public view {
-        assertEq(stable.balanceOf(address(vault)), 1, "TODO Ex6.3");
+        assertEq(stable.balanceOf(address(vault)), 0, "vault must not retain sUSD");
     }
 }
